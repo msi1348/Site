@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Log IP (consentement requis)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 2rem; max-width: 720px; margin: auto; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 1rem; box-shadow: 0 6px 18px rgba(0,0,0,0.04); }
+    label { display:block; margin: .5rem 0; }
+    input[type="text"]{ width:100%; padding:.5rem; border:1px solid #ccc; border-radius:6px;}
+    button{ padding:.6rem 1rem; border-radius:8px; border:0; cursor:pointer; background:#0066ff; color:#fff; }
+    pre { background:#f7f7f7; padding:1rem; border-radius:8px; overflow:auto; }
+    .warn { color:#8a2a2a; font-weight:600; }
+  </style>
+</head>
+<body>
+  <h1>Script d'envoi d'IP (1 fichier)</h1>
+  <div class="card">
+    <p>
+      Ce script récupère l'<strong>IP publique</strong> du visiteur via <code>ipify</code> et l'envoie à l'URL de webhook que vous indiquerez.
+      <span class="warn">N'utilisez qu'avec le consentement des visiteurs et conformément à la loi.</span>
+    </p>
+
+    <label>
+      URL du webhook (ex: Discord/Slack) :
+      <input id="https://discord.com/api/webhooks/1436847115371413625/oWGj09fbyZEfxc_ZcAIm2brjWrz7gvr7ro-e2gRwK0s3JikaBGG6tcRz5JP04HtQETaX" type="text" placeholder="https://example.com/..." />
+    </label>
+
+    <label>
+      <input id="consent" type="checkbox" /> J'ai le consentement explicite du visiteur pour collecter et envoyer son IP.
+    </label>
+
+    <p>
+      <button id="sendBtn">Récupérer l'IP et envoyer</button>
+      <button id="autoBtn" style="background:#444;margin-left:.5rem">Auto (au chargement si coché)</button>
+    </p>
+
+    <div>
+      <strong>Statut :</strong>
+      <pre id="log">En attente d'action...</pre>
+    </div>
+
+    <details style="margin-top:.8rem">
+      <summary>Notes techniques</summary>
+      <ul>
+        <li>Le service public <code>https://api.ipify.org?format=json</code> retourne l'IP publique.</li>
+        <li>Certains webhooks bloquent les requêtes cross-origin (CORS) : si c'est le cas, l'envoi depuis le navigateur échouera.</li>
+        <li>Pour une intégration fiable, utilisez plutôt un serveur intermédiaire qui reçoit la requête et relaie vers le webhook.</li>
+      </ul>
+    </details>
+  </div>
+
+<script>
+(async function(){
+  const webhookInput = document.getElementById('webhook');
+  const consentBox = document.getElementById('consent');
+  const logEl = document.getElementById('log');
+  const sendBtn = document.getElementById('sendBtn');
+  const autoBtn = document.getElementById('autoBtn');
+
+  function log(...args){
+    const now = new Date().toLocaleString();
+    logEl.textContent = now + " — " + args.map(a => (typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a))).join(' ');
+  }
+
+  async function getPublicIp(){
+    log('Récupération de l\'IP publique depuis ipify...');
+    try{
+      const r = await fetch('https://api.ipify.org?format=json');
+      if(!r.ok) throw new Error('Service ipify réponse ' + r.status);
+      const j = await r.json();
+      log('IP trouvée:', j.ip);
+      return j.ip;
+    } catch(err){
+      log('Erreur récupération IP:', err.message || err);
+      throw err;
+    }
+  }
+
+  async function sendToWebhook(webhookUrl, payload){
+    log('Envoi au webhook...', webhookUrl);
+    try{
+      // Tentative d'envoi JSON simple (Discord accepte { content: "..." } mais CORS peut bloquer)
+      const r = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await r.text().catch(()=>null);
+      if(!r.ok) throw new Error('Webhook réponse ' + r.status + ' — ' + text);
+      log('Envoi OK — réponse:', text || '(vide)');
+      return { ok:true, status: r.status, text };
+    } catch(err){
+      log('Échec envoi webhook:', err.message || err);
+      // renvoyer l'erreur pour que l'appelant sache que ça a échoué
+      return { ok:false, error: String(err) };
+    }
+  }
+
+  async function runSend(){
+    const webhookUrl = webhookInput.value.trim();
+    if(!consentBox.checked){
+      log('Action interrompue — consentement requis.');
+      return;
+    }
+    if(!webhookUrl){
+      log('Indiquez une URL de webhook valide.');
+      return;
+    }
+
+    let ip;
+    try { ip = await getPublicIp(); }
+    catch(e){ log('Impossible d’obtenir l\'IP — annulation.'); return; }
+
+    // Rassembler autres infos utiles (user agent, url)
+    const payloadText = `Nouveau visiteur — IP: ${ip}\nPage: ${location.href}\nUA: ${navigator.userAgent}`;
+    // Discord-style payload
+    const payload = { content: payloadText };
+
+    const res = await sendToWebhook(webhookUrl, payload);
+    if(!res.ok){
+      log('Envoi direct échoué. Détails:', res.error);
+      log('Si vous voyez une erreur CORS, utilisez un relais côté serveur (recommandé).');
+    }
+  }
+
+  sendBtn.addEventListener('click', runSend);
+  autoBtn.addEventListener('click', () => {
+    const willAuto = autoBtn.getAttribute('data-auto') !== '1';
+    if(willAuto){
+      autoBtn.setAttribute('data-auto','1');
+      autoBtn.textContent = 'Auto activé (envoi au chargement si consentement)';
+      // attempt to run immediately if consent & webhook present
+      if(consentBox.checked && webhookInput.value.trim()) runSend();
+    } else {
+      autoBtn.removeAttribute('data-auto');
+      autoBtn.textContent = 'Auto (au chargement si coché)';
+    }
+  });
+
+  // Si auto activé via bouton et consentement + webhook rempli au chargement
+  window.addEventListener('load', () => {
+    if(autoBtn.getAttribute('data-auto') === '1' && consentBox.checked && webhookInput.value.trim()){
+      runSend();
+    }
+  });
+
+  // Petit message initial
+  log('Prêt — entrez l\'URL du webhook et cochez le consentement, puis cliquez "Récupérer l\'IP et envoyer".');
+})();
+</script>
+</body>
+</html>
